@@ -7,40 +7,14 @@ import PIL
 import PIL.Image
 import sys
 import torch
-
-try:
-    from .correlation import correlation # the custom cost volume layer
-except:
-    sys.path.insert(0, './correlation'); import correlation # you should consider upgrading python
-# end
-
+from pytorch_pwc.correlation import FunctionCorrelation
+from pytorch_pwc import PWC_ROOT_DIR
 ##########################################################
-
 assert(int(str('').join(torch.__version__.split('.')[0:2])) >= 13) # requires at least pytorch version 1.3.0
 
-torch.set_grad_enabled(False) # make sure to not compute gradients for computational performance
-
-torch.backends.cudnn.enabled = True # make sure to use cudnn for computational performance
-
-##########################################################
-
-arguments_strModel = 'default' # 'default', or 'chairs-things'
-arguments_strOne = './images/one.png'
-arguments_strTwo = './images/two.png'
-arguments_strOut = './out.flo'
-
-for strOption, strArgument in getopt.getopt(sys.argv[1:], '', [ strParameter[2:] + '=' for strParameter in sys.argv[1::2] ])[0]:
-    if strOption == '--model' and strArgument != '': arguments_strModel = strArgument # which model to use
-    if strOption == '--one' and strArgument != '': arguments_strOne = strArgument # path to the first frame
-    if strOption == '--two' and strArgument != '': arguments_strTwo = strArgument # path to the second frame
-    if strOption == '--out' and strArgument != '': arguments_strOut = strArgument # path to where the output should be stored
-# end
-
-##########################################################
 
 backwarp_tenGrid = {}
 backwarp_tenPartial = {}
-
 def backwarp(tenInput, tenFlow):
     if str(tenFlow.shape) not in backwarp_tenGrid:
         tenHor = torch.linspace(-1.0 + (1.0 / tenFlow.shape[3]), 1.0 - (1.0 / tenFlow.shape[3]), tenFlow.shape[3]).view(1, 1, 1, -1).repeat(1, 1, tenFlow.shape[2], 1)
@@ -66,7 +40,7 @@ def backwarp(tenInput, tenFlow):
 ##########################################################
 
 class Network(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, arguments_strModel="default"):
         super().__init__()
 
         class Extractor(torch.nn.Module):
@@ -189,7 +163,7 @@ class Network(torch.nn.Module):
                     tenFlow = None
                     tenFeat = None
 
-                    tenVolume = torch.nn.functional.leaky_relu(input=correlation.FunctionCorrelation(tenOne=tenOne, tenTwo=tenTwo), negative_slope=0.1, inplace=False)
+                    tenVolume = torch.nn.functional.leaky_relu(input=FunctionCorrelation(tenOne=tenOne, tenTwo=tenTwo), negative_slope=0.1, inplace=False)
 
                     tenFeat = torch.cat([ tenVolume ], 1)
 
@@ -197,7 +171,7 @@ class Network(torch.nn.Module):
                     tenFlow = self.netUpflow(objPrevious['tenFlow'])
                     tenFeat = self.netUpfeat(objPrevious['tenFeat'])
 
-                    tenVolume = torch.nn.functional.leaky_relu(input=correlation.FunctionCorrelation(tenOne=tenOne, tenTwo=backwarp(tenInput=tenTwo, tenFlow=tenFlow * self.fltBackwarp)), negative_slope=0.1, inplace=False)
+                    tenVolume = torch.nn.functional.leaky_relu(input=FunctionCorrelation(tenOne=tenOne, tenTwo=backwarp(tenInput=tenTwo, tenFlow=tenFlow * self.fltBackwarp)), negative_slope=0.1, inplace=False)
 
                     tenFeat = torch.cat([ tenVolume, tenOne, tenFlow, tenFeat ], 1)
 
@@ -271,56 +245,61 @@ class Network(torch.nn.Module):
     # end
 # end
 
-netNetwork = None
 
-##########################################################
+class FlowEstimator():
+    def __init__(self, device):
+        torch.backends.cudnn.enabled = True # make sure to use cudnn for computational performance
+        self.device=device
+        ##########################################################
+        self.netNetwork = Network().to(device).eval()
+        # end
 
-def estimate(tenOne, tenTwo):
-    global netNetwork
 
-    if netNetwork is None:
-        netNetwork = Network().cuda().eval()
-    # end
+    @torch.no_grad()
+    def forward(self, tenOne: torch.Tensor, tenTwo: torch.Tensor) -> torch.Tensor:
+        """_summary_
 
-    assert(tenOne.shape[1] == tenTwo.shape[1])
-    assert(tenOne.shape[2] == tenTwo.shape[2])
+        Args:
+            tenOne (torch.Tensor, C,H,W, torch.float32): Image 1
+            tenTwo (torch.Tensor, C,H,W, torch.float32): Image 2
 
-    intWidth = tenOne.shape[2]
-    intHeight = tenOne.shape[1]
+        Returns:
+            torch.Tensor (2,H,W, torch.float32): flow from image 1 to image 2
+        """
+        
+        
+        assert(tenOne.shape[1] == tenTwo.shape[1])
+        assert(tenOne.shape[2] == tenTwo.shape[2])
 
-    assert(intWidth == 1024) # remember that there is no guarantee for correctness, comment this line out if you acknowledge this and want to continue
-    assert(intHeight == 436) # remember that there is no guarantee for correctness, comment this line out if you acknowledge this and want to continue
+        intWidth = tenOne.shape[2]
+        intHeight = tenOne.shape[1]
 
-    tenPreprocessedOne = tenOne.cuda().view(1, 3, intHeight, intWidth)
-    tenPreprocessedTwo = tenTwo.cuda().view(1, 3, intHeight, intWidth)
+        assert(intWidth == 1024) # remember that there is no guarantee for correctness, comment this line out if you acknowledge this and want to continue
+        assert(intHeight == 436) # remember that there is no guarantee for correctness, comment this line out if you acknowledge this and want to continue
 
-    intPreprocessedWidth = int(math.floor(math.ceil(intWidth / 64.0) * 64.0))
-    intPreprocessedHeight = int(math.floor(math.ceil(intHeight / 64.0) * 64.0))
+        tenPreprocessedOne = tenOne.to(self.device).view(1, 3, intHeight, intWidth)
+        tenPreprocessedTwo = tenTwo.to(self.device).view(1, 3, intHeight, intWidth)
 
-    tenPreprocessedOne = torch.nn.functional.interpolate(input=tenPreprocessedOne, size=(intPreprocessedHeight, intPreprocessedWidth), mode='bilinear', align_corners=False)
-    tenPreprocessedTwo = torch.nn.functional.interpolate(input=tenPreprocessedTwo, size=(intPreprocessedHeight, intPreprocessedWidth), mode='bilinear', align_corners=False)
+        intPreprocessedWidth = int(math.floor(math.ceil(intWidth / 64.0) * 64.0))
+        intPreprocessedHeight = int(math.floor(math.ceil(intHeight / 64.0) * 64.0))
 
-    tenFlow = torch.nn.functional.interpolate(input=netNetwork(tenPreprocessedOne, tenPreprocessedTwo), size=(intHeight, intWidth), mode='bilinear', align_corners=False)
+        tenPreprocessedOne = torch.nn.functional.interpolate(input=tenPreprocessedOne, size=(intPreprocessedHeight, intPreprocessedWidth), mode='bilinear', align_corners=False)
+        tenPreprocessedTwo = torch.nn.functional.interpolate(input=tenPreprocessedTwo, size=(intPreprocessedHeight, intPreprocessedWidth), mode='bilinear', align_corners=False)
 
-    tenFlow[:, 0, :, :] *= float(intWidth) / float(intPreprocessedWidth)
-    tenFlow[:, 1, :, :] *= float(intHeight) / float(intPreprocessedHeight)
+        tenFlow = torch.nn.functional.interpolate(input=self.netNetwork(tenPreprocessedOne, tenPreprocessedTwo), size=(intHeight, intWidth), mode='bilinear', align_corners=False)
 
-    return tenFlow[0, :, :, :].cpu()
-# end
-
-##########################################################
+        tenFlow[:, 0, :, :] *= float(intWidth) / float(intPreprocessedWidth)
+        tenFlow[:, 1, :, :] *= float(intHeight) / float(intPreprocessedHeight)
+        
+        return tenFlow[0, :, :, :]
+    
 
 if __name__ == '__main__':
-    tenOne = torch.FloatTensor(numpy.ascontiguousarray(numpy.array(PIL.Image.open(arguments_strOne))[:, :, ::-1].transpose(2, 0, 1).astype(numpy.float32) * (1.0 / 255.0)))
-    tenTwo = torch.FloatTensor(numpy.ascontiguousarray(numpy.array(PIL.Image.open(arguments_strTwo))[:, :, ::-1].transpose(2, 0, 1).astype(numpy.float32) * (1.0 / 255.0)))
-
-    tenOutput = estimate(tenOne, tenTwo)
-
-    objOutput = open(arguments_strOut, 'wb')
-
-    numpy.array([ 80, 73, 69, 72 ], numpy.uint8).tofile(objOutput)
-    numpy.array([ tenOutput.shape[2], tenOutput.shape[1] ], numpy.int32).tofile(objOutput)
-    numpy.array(tenOutput.numpy().transpose(1, 2, 0), numpy.float32).tofile(objOutput)
-
-    objOutput.close()
-# end
+    import os
+    tenOne = torch.FloatTensor(numpy.ascontiguousarray(numpy.array(PIL.Image.open(os.path.join(PWC_ROOT_DIR, "assets/one.png")))[:, :, ::-1].transpose(2, 0, 1).astype(numpy.float32) * (1.0 / 255.0)))
+    tenTwo = torch.FloatTensor(numpy.ascontiguousarray(numpy.array(PIL.Image.open(os.path.join(PWC_ROOT_DIR, "assets/two.png")))[:, :, ::-1].transpose(2, 0, 1).astype(numpy.float32) * (1.0 / 255.0)))
+    
+    print(tenOne.shape, tenOne.dtype)
+    fe = FlowEstimator(device="cuda")
+    res = fe.forward(tenOne, tenTwo)
+    print(res.shape)

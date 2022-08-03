@@ -1,0 +1,8 @@
+Metadata-Version: 2.1
+Name: pytorch-pwc
+Version: 0.0.1
+Summary: Package of pwc_net
+Author: Jonas Frey
+Author-email: jonfrey@ethz.ch
+Requires-Python: >=3.6
+License-File: LICENSE
