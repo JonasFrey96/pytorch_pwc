@@ -246,7 +246,7 @@ class Network(torch.nn.Module):
 # end
 
 
-class FlowEstimator():
+class PwcFlowEstimator():
     def __init__(self, device):
         torch.backends.cudnn.enabled = True # make sure to use cudnn for computational performance
         self.device=device
@@ -300,6 +300,6 @@ if __name__ == '__main__':
     tenTwo = torch.FloatTensor(numpy.ascontiguousarray(numpy.array(PIL.Image.open(os.path.join(PWC_ROOT_DIR, "assets/two.png")))[:, :, ::-1].transpose(2, 0, 1).astype(numpy.float32) * (1.0 / 255.0)))
     
     print(tenOne.shape, tenOne.dtype)
-    fe = FlowEstimator(device="cuda")
+    fe = PwcFlowEstimator(device="cuda")
     res = fe.forward(tenOne, tenTwo)
     print(res.shape)
